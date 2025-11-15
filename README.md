@@ -53,6 +53,10 @@ Insurance companies process millions of claims annually, facing critical challen
 
 ### See FraudLens AI in Action
 
+**📹 [Watch the Full Demo Video](https://youtu.be/sPzmWKFb60c)**
+
+[![FraudLens AI Demo](https://img.youtube.com/vi/sPzmWKFb60c/0.jpg)](https://youtu.be/sPzmWKFb60c)
+
 **Upload a claim → Get results in 60 seconds:**
 
 1. **Executive Summary** - AI-generated fraud investigation report
