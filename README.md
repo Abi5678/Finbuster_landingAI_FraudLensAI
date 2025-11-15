@@ -66,7 +66,13 @@ Insurance companies process millions of claims annually, facing critical challen
 
 ## 🏗️ Architecture
 
-### Multi-Agent System
+### System Architecture Diagram
+
+![FraudLens AI System Architecture](system_architecture.svg)
+
+*Complete system architecture showing Landing AI ADE integration, multi-agent orchestration, and breakthrough features*
+
+### Multi-Agent System Flow
 
 ```
 ┌─────────────────────────────────────────────────────────┐
@@ -250,6 +256,7 @@ FraudLens-AI/
 ├── fraud_story_generator.py        # AI narrative generation
 ├── fraud_network_analyzer.py       # Fraud ring detection
 ├── deepfake_detector.py            # Photo authenticity analysis
+├── system_architecture.svg         # System architecture diagram
 ├── agents_v2/                      # Multi-agent system
 │   ├── orchestrator.py             # Master coordinator
 │   ├── document_agent.py           # Landing AI ADE integration
