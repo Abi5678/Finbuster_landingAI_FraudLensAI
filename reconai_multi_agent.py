@@ -540,8 +540,23 @@ if uploaded_file:
         <span style='color: var(--light-grey); margin-left: 1rem;'>({uploaded_file.size / 1024:.1f} KB)</span>
     </div>
     """, unsafe_allow_html=True)
-
-    if st.button("Start Analysis", type="primary", use_container_width=True):
+    
+    # Check if this file has already been analyzed
+    current_file_id = f"{uploaded_file.name}_{uploaded_file.size}"
+    already_analyzed = st.session_state.get("last_analyzed_file") == current_file_id
+    
+    if already_analyzed:
+        st.success("✓ This document has been analyzed. Results are shown below.")
+        st.info("💡 Upload a different document to analyze a new claim.")
+    
+    # Only show analysis button if not already analyzed
+    analyze_button_disabled = already_analyzed
+    if st.button("Start Analysis", type="primary", use_container_width=True, disabled=analyze_button_disabled):
+        # Clear cached results from previous analysis
+        for key in ['claim_details', 'document_summary', 'fraud_narrative']:
+            if key in st.session_state:
+                del st.session_state[key]
+        
         with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp_file:
             tmp_file.write(uploaded_file.getvalue())
             pdf_path = tmp_file.name
@@ -658,6 +673,7 @@ if uploaded_file:
             st.session_state.full_result = result  # Store full analysis result
             st.session_state.analysis_complete = True  # Flag to persist results view
             st.session_state.filename = uploaded_file.name  # Store filename
+            st.session_state.last_analyzed_file = f"{uploaded_file.name}_{uploaded_file.size}"  # Prevent re-analysis
 
             if (
                 st.session_state.get("selected_dataroom")
@@ -767,29 +783,33 @@ Return ONLY the JSON object, no other text."""
         if fallback_markdown:
             chunk_texts = [fallback_markdown[:4000]]
 
-    with st.spinner("Summarizing document..."):
-        try:
-            chunk_sample = "\n\n".join(chunk_texts[:5])[:4000]
-            summary_prompt = f"""Provide a concise executive summary of the following insurance claim document.
+    # Cache document summary to avoid regenerating on every rerun
+    if "document_summary" not in st.session_state:
+        with st.spinner("Summarizing document..."):
+            try:
+                chunk_sample = "\n\n".join(chunk_texts[:5])[:4000]
+                summary_prompt = f"""Provide a concise executive summary of the following insurance claim document.
 Highlight the claim context, key financial figures, notable parties, and any discrepancies.
 Keep the summary under 120 words.
 
 Document excerpt:
 {chunk_sample}
 """
-            url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={gemini_key}"
-            response = requests.post(
-                url,
-                headers={"Content-Type": "application/json"},
-                json={"contents": [{"parts": [{"text": summary_prompt}]}]},
-                timeout=30
-            )
-            if response.status_code == 200:
-                summary_text = response.json()["candidates"][0]["content"]["parts"][0]["text"]
-            else:
-                summary_text = "Unable to generate summary."
-        except Exception as e:
-            summary_text = "Summary unavailable. Please review document details below."
+                url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={gemini_key}"
+                response = requests.post(
+                    url,
+                    headers={"Content-Type": "application/json"},
+                    json={"contents": [{"parts": [{"text": summary_prompt}]}]},
+                    timeout=30
+                )
+                if response.status_code == 200:
+                    st.session_state.document_summary = response.json()["candidates"][0]["content"]["parts"][0]["text"]
+                else:
+                    st.session_state.document_summary = "Unable to generate summary."
+            except Exception as e:
+                st.session_state.document_summary = "Summary unavailable. Please review document details below."
+    
+    summary_text = st.session_state.document_summary
 
     # ========== NEW LAYOUT: Executive Summary on left, Metrics on right ==========
     # Prepare claim data for fraud story
@@ -818,10 +838,12 @@ Document excerpt:
     with summary_col:
         # Display Executive Summary in Document Summary style
         if indicators_for_story:
-            # Generate narrative first
-            with st.spinner("🔍 Analyzing evidence and reconstructing fraud timeline..."):
-                narrative = generate_fraud_narrative(fraud_story_claim_data, indicators_for_story, gemini_key)
+            # Cache fraud narrative to avoid regenerating on every rerun
+            if "fraud_narrative" not in st.session_state:
+                with st.spinner("🔍 Analyzing evidence and reconstructing fraud timeline..."):
+                    st.session_state.fraud_narrative = generate_fraud_narrative(fraud_story_claim_data, indicators_for_story, gemini_key)
             
+            narrative = st.session_state.fraud_narrative
             # Format narrative
             formatted_narrative = format_narrative_for_display(narrative)
             
@@ -1096,124 +1118,127 @@ Landing AI ADE + Google Gemini 2.5 Flash
         "text/plain",
         use_container_width=True
     )
+    
+    # Chat interface moved outside this block to persist after deepfake uploads
 
-    # Advanced RAG Chat Interface
-    st.markdown("---")
-    st.markdown("<h3 style='color: var(--secondary-light);'>💬 Ask Questions About This Claim</h3>", unsafe_allow_html=True)
-    st.markdown("<p style='color: var(--light-grey); margin-bottom: 1rem;'>Advanced document analysis with multi-query retrieval and citations</p>", unsafe_allow_html=True)
+# ========== CHAT INTERFACE (ALWAYS AVAILABLE IF DOCUMENT EXISTS) ==========
+# Move chat outside the uploaded_file block so it persists after deepfake uploads
+st.markdown("---")
+st.markdown("<h3 style='color: var(--secondary-light);'>💬 Ask Questions About This Claim</h3>", unsafe_allow_html=True)
+st.markdown("<p style='color: var(--light-grey); margin-bottom: 1rem;'>Advanced document analysis with multi-query retrieval and citations</p>", unsafe_allow_html=True)
 
-    # Check if document is available
-    if "document_content" not in st.session_state or not st.session_state.document_content:
-        st.warning("⚠️ No document content available. Please analyze a document first.")
-    else:
-        # Initialize chat history
-        if "chat_messages" not in st.session_state:
-            st.session_state.chat_messages = []
+# Check if document is available
+if "document_content" not in st.session_state or not st.session_state.document_content:
+    st.info("💡 Upload and analyze a claim document to enable the chat feature.")
+else:
+    # Initialize chat history
+    if "chat_messages" not in st.session_state:
+        st.session_state.chat_messages = []
 
-        # Display existing chat history
-        for msg_idx, message in enumerate(st.session_state.chat_messages):
-            with st.chat_message(message["role"]):
-                if message["role"] == "user":
-                    st.markdown(message["content"])
-                else:
-                    # Display answer text
-                    st.markdown(message["content"])
+    # Display existing chat history
+    for msg_idx, message in enumerate(st.session_state.chat_messages):
+        with st.chat_message(message["role"]):
+            if message["role"] == "user":
+                st.markdown(message["content"])
+            else:
+                # Display answer text
+                st.markdown(message["content"])
 
-                    # Display reasoning log (collapsible)
-                    if "reasoning_log" in message:
-                        reasoning = message["reasoning_log"]
-                        sub_queries = reasoning.get("sub_queries", [])
-                        if sub_queries:
-                            with st.expander(f"▸ Analyzed via {len(sub_queries)} queries"):
-                                for i, sq in enumerate(sub_queries, 1):
-                                    st.markdown(f"**{i}.** {sq}")
+                # Display reasoning log (collapsible)
+                if "reasoning_log" in message:
+                    reasoning = message["reasoning_log"]
+                    sub_queries = reasoning.get("sub_queries", [])
+                    if sub_queries:
+                        with st.expander(f"▸ Analyzed via {len(sub_queries)} queries"):
+                            for i, sq in enumerate(sub_queries, 1):
+                                st.markdown(f"**{i}.** {sq}")
 
-                    # Display citations (source pills)
-                    if "citations" in message and message["citations"]:
-                        st.markdown("**📄 Source:**")
-                        first_citation = message["citations"][0]
-                        st.markdown(
-                            f'<div style="background: var(--dark-bg); padding: 0.3rem 0.6rem; '
-                            f'border-radius: 12px; font-size: 0.8rem; display: inline-flex; '
-                            f'border: 1px solid var(--secondary-light); max-width: 200px; '
-                            f'justify-content: center;">'
-                            f'{first_citation.get("document", "doc")}</div>',
-                            unsafe_allow_html=True
-                        )
-
-        # Chat input using form placeholder to avoid duplicate rendering during processing
-        chat_form_placeholder = st.empty()
-        status_placeholder = st.empty()
-
-        with chat_form_placeholder.form(key=f"chat_form_{len(st.session_state.chat_messages)}", clear_on_submit=True):
-            user_question = st.text_input(
-                "Your question:",
-                placeholder="e.g., What's the invoice total?, What is the claimant address?",
-                label_visibility="collapsed"
-            )
-            submit_button = st.form_submit_button("Send")
-
-        if submit_button and user_question:
-            # Add user message
-            st.session_state.chat_messages.append({"role": "user", "content": user_question})
-
-            # Remove the form while processing to prevent duplicate UI
-            chat_form_placeholder.empty()
-
-            # Process with RAG system
-            try:
-                def call_gemini(prompt_text: str, base_message: str):
-                    url_local = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={gemini_key}"
-                    status_placeholder.markdown(
-                        f"<p style='color: #8ab4ff; font-weight: 600;'>⏳ {base_message}...</p>",
-                        unsafe_allow_html=True,
+                # Display citations (source pills)
+                if "citations" in message and message["citations"]:
+                    st.markdown("**📄 Source:**")
+                    first_citation = message["citations"][0]
+                    st.markdown(
+                        f'<div style="background: var(--dark-bg); padding: 0.3rem 0.6rem; '
+                        f'border-radius: 12px; font-size: 0.8rem; display: inline-flex; '
+                        f'border: 1px solid var(--secondary-light); max-width: 200px; '
+                        f'justify-content: center;">'
+                        f'{first_citation.get("document", "doc")}</div>',
+                        unsafe_allow_html=True
                     )
-                    response_local = requests.post(
-                        url_local,
-                        headers={"Content-Type": "application/json"},
-                        json={"contents": [{"parts": [{"text": prompt_text}]}]},
-                        timeout=30
-                    )
-                    return response_local
 
-                # Step 1: Retrieve relevant chunks (simple keyword filtering)
+    # Chat input using form placeholder to avoid duplicate rendering during processing
+    chat_form_placeholder = st.empty()
+    status_placeholder = st.empty()
+
+    with chat_form_placeholder.form(key=f"chat_form_{len(st.session_state.chat_messages)}", clear_on_submit=True):
+        user_question = st.text_input(
+            "Your question:",
+            placeholder="e.g., What's the invoice total?, What is the claimant address?",
+            label_visibility="collapsed"
+        )
+        submit_button = st.form_submit_button("Send")
+
+    if submit_button and user_question:
+        # Add user message
+        st.session_state.chat_messages.append({"role": "user", "content": user_question})
+
+        # Remove the form while processing to prevent duplicate UI
+        chat_form_placeholder.empty()
+
+        # Process with RAG system
+        try:
+            def call_gemini(prompt_text: str, base_message: str):
+                url_local = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={gemini_key}"
                 status_placeholder.markdown(
-                    "<p style='color: #8ab4ff; font-weight: 600;'>⏳ Retrieving relevant context...</p>",
+                    f"<p style='color: #8ab4ff; font-weight: 600;'>⏳ {base_message}...</p>",
                     unsafe_allow_html=True,
                 )
-                sub_queries = [user_question]
-                chunks = st.session_state.document_chunks if isinstance(st.session_state.get("document_chunks"), list) else []
-                retrieved_chunks = []
-                for sq_idx, sq in enumerate(sub_queries):
-                    keywords = sq.lower().split()
-                    for chunk_idx, chunk in enumerate(chunks[:20]):  # Limit to first 20 chunks
-                        chunk_text = str(chunk).lower()
-                        if any(kw in chunk_text for kw in keywords):
-                            retrieved_chunks.append({
-                                "sub_query": sq,
-                                "chunk_index": chunk_idx,
-                                "content": str(chunk)[:500]
-                            })
+                response_local = requests.post(
+                    url_local,
+                    headers={"Content-Type": "application/json"},
+                    json={"contents": [{"parts": [{"text": prompt_text}]}]},
+                    timeout=30
+                )
+                return response_local
 
-                if not retrieved_chunks and chunks:
-                    for idx, chunk in enumerate(chunks[:3]):
+            # Step 1: Retrieve relevant chunks (simple keyword filtering)
+            status_placeholder.markdown(
+                "<p style='color: #8ab4ff; font-weight: 600;'>⏳ Retrieving relevant context...</p>",
+                unsafe_allow_html=True,
+            )
+            sub_queries = [user_question]
+            chunks = st.session_state.document_chunks if isinstance(st.session_state.get("document_chunks"), list) else []
+            retrieved_chunks = []
+            for sq_idx, sq in enumerate(sub_queries):
+                keywords = sq.lower().split()
+                for chunk_idx, chunk in enumerate(chunks[:20]):  # Limit to first 20 chunks
+                    chunk_text = str(chunk).lower()
+                    if any(kw in chunk_text for kw in keywords):
                         retrieved_chunks.append({
-                            "sub_query": user_question,
-                            "chunk_index": idx,
+                            "sub_query": sq,
+                            "chunk_index": chunk_idx,
                             "content": str(chunk)[:500]
                         })
 
-                # Step 2: Extract structured data from result
-                full_result = st.session_state.full_result
-                structured_data = {
-                    "fraud_score": full_result.get("fraud_score", 0),
-                    "risk_level": full_result.get("risk_level", "unknown"),
-                    "total_indicators": full_result.get("total_indicators", 0),
-                    "indicators": full_result.get("indicators", [])[:5]
-                }
+            if not retrieved_chunks and chunks:
+                for idx, chunk in enumerate(chunks[:3]):
+                    retrieved_chunks.append({
+                        "sub_query": user_question,
+                        "chunk_index": idx,
+                        "content": str(chunk)[:500]
+                    })
 
-                # Step 3: Synthesize answer with Gemini
-                synthesis_prompt = f"""You are analyzing an insurance claim document. Answer the user's question using the information provided.
+            # Step 2: Extract structured data from result
+            full_result = st.session_state.full_result
+            structured_data = {
+                "fraud_score": full_result.get("fraud_score", 0),
+                "risk_level": full_result.get("risk_level", "unknown"),
+                "total_indicators": full_result.get("total_indicators", 0),
+                "indicators": full_result.get("indicators", [])[:5]
+            }
+
+            # Step 3: Synthesize answer with Gemini
+            synthesis_prompt = f"""You are analyzing an insurance claim document. Answer the user's question using the information provided.
 
 User Question: {user_question}
 
@@ -1232,37 +1257,37 @@ Full Document Context (first 5000 chars):
 
 Provide a clear, concise answer to the user's question. If you cite specific information, mention where it came from."""
 
-                response = call_gemini(synthesis_prompt, "Synthesizing answer")
+            response = call_gemini(synthesis_prompt, "Synthesizing answer")
 
-                if response.status_code == 200:
-                    answer = response.json()['candidates'][0]['content']['parts'][0]['text']
-                    status_placeholder.empty()
-
-                    st.session_state.chat_messages.append({
-                        "role": "assistant",
-                        "content": answer,
-                        "reasoning_log": {
-                            "sub_queries": sub_queries,
-                            "chunks_retrieved": len(retrieved_chunks)
-                        },
-                        "citations": [
-                            {"document": "claim.pdf", "chunk": rc["chunk_index"]}
-                            for rc in retrieved_chunks[:3]
-                        ],
-                        "status": "done"
-                    })
-                    st.rerun()
-                else:
-                    raise Exception(f"API returned {response.status_code}")
-
-            except Exception as e:
+            if response.status_code == 200:
+                answer = response.json()['candidates'][0]['content']['parts'][0]['text']
                 status_placeholder.empty()
+
                 st.session_state.chat_messages.append({
                     "role": "assistant",
-                    "content": f"Sorry, I encountered an error: {str(e)}",
-                    "status": "error"
+                    "content": answer,
+                    "reasoning_log": {
+                        "sub_queries": sub_queries,
+                        "chunks_retrieved": len(retrieved_chunks)
+                    },
+                    "citations": [
+                        {"document": "claim.pdf", "chunk": rc["chunk_index"]}
+                        for rc in retrieved_chunks[:3]
+                    ],
+                    "status": "done"
                 })
                 st.rerun()
+            else:
+                raise Exception(f"API returned {response.status_code}")
+
+        except Exception as e:
+            status_placeholder.empty()
+            st.session_state.chat_messages.append({
+                "role": "assistant",
+                "content": f"Sorry, I encountered an error: {str(e)}",
+                "status": "error"
+            })
+            st.rerun()
 
 # Sidebar is hidden via CSS, so all directory controls are in the main content area
 
